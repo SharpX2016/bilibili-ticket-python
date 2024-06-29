@@ -1,5 +1,4 @@
 import logging
-import sys
 from time import sleep, time
 
 from loguru import logger
@@ -43,8 +42,8 @@ class Task:
 
         self.states = [
             State(name="开始"),
-            State(name="获取Token", on_enter="QueryTokenAction"),
             State(name="等待开票", on_enter="WaitAvailableAction"),
+            State(name="获取Token", on_enter="QueryTokenAction"),
             State(name="验证码", on_enter="RiskProcessAction"),
             State(name="等待余票", on_enter="QueryTicketAction"),
             State(name="创建订单", on_enter="CreateOrderAction"),
@@ -63,6 +62,12 @@ class Task:
         self.machine.add_transition(
             trigger="Next",
             source="开始",
+            dest="等待开票",
+        )
+
+        self.machine.add_transition(
+            trigger="WaitAvailable",
+            source="等待开票",
             dest="获取Token",
         )
 
@@ -82,21 +87,8 @@ class Task:
         self.machine.add_transition(
             trigger="QueryToken",
             source="获取Token",
-            dest="等待开票",
+            dest="获取Token",
             conditions=lambda: self.queryTokenResult == 2,
-        )
-        self.machine.add_transition(
-            trigger="QueryToken",
-            source="获取Token",
-            dest="获取Token",
-            conditions=lambda: self.queryTokenResult == 3,
-        )
-
-        # True-开票
-        self.machine.add_transition(
-            trigger="WaitAvailable",
-            source="等待开票",
-            dest="获取Token",
         )
 
         # True-成功, False-失败
@@ -167,8 +159,44 @@ class Task:
             conditions=lambda: self.createStatusResult is False,
         )
 
+        # 上次刷新时间
+        self.lastTime = time()
+
         # 关闭Transitions自带日志
         logging.getLogger("transitions").setLevel(logging.CRITICAL)
+
+    @logger.catch
+    def WaitAvailableAction(self) -> None:
+        """
+        等待开票
+        """
+        countdown = self.api.GetSaleStartTime() - int(time())
+
+        if countdown > 0:
+            logger.warning("【等待开票】请确保本机时间是北京时间, 服务器用户尤其要注意!")
+
+            if countdown >= 3600:
+                for _ in range(countdown // 10):
+                    countdown = abs(self.api.GetSaleStartTime() - int(time()))
+                    logger.info(f"【等待开票】需要等待 {countdown/60:.1f} 分钟")
+                    sleep(600)
+                    countdown -= 600
+            if 3600 > countdown >= 600:
+                for _ in range(countdown // 60):
+                    countdown = abs(self.api.GetSaleStartTime() - int(time()))
+                    logger.info(f"【等待开票】即将开票! 需要等待 {countdown/60:.1f} 分钟")
+                    sleep(60)
+                    countdown -= 60
+            if 600 > countdown >= 60:
+                for _ in range(countdown // 5):
+                    countdown = abs(self.api.GetSaleStartTime() - int(time()))
+                    logger.info(f"【等待开票】准备开票! 需要等待 {countdown/60:.1f} 分钟")
+                    sleep(5)
+                    countdown -= 5
+            if countdown == 0:
+                logger.info("【等待开票】等待结束! 开始抢票")
+        else:
+            logger.info("【等待开票】已开票! 开始进入抢票模式")
 
     @logger.catch
     def QueryTokenAction(self) -> None:
@@ -178,6 +206,7 @@ class Task:
         返回值: 0-成功, 1-风控, 2-未开票, 3-未知
         """
         self.queryTokenResult = self.api.QueryToken()
+        self.lastTime = time()
 
         # 顺路
         if self.queryTokenResult == 0:
@@ -186,34 +215,6 @@ class Task:
         # 防风控
         else:
             sleep(self.sleep)
-
-    @logger.catch
-    def WaitAvailableAction(self) -> None:
-        """
-        等待开票
-        """
-        countdown = abs(self.api.GetSaleStartTime() - int(time()))
-
-        if countdown >= 3600:
-            for _ in range(countdown // 10):
-                countdown = abs(self.api.GetSaleStartTime() - int(time()))
-                logger.info(f"【等待开票】需要等待 {countdown/60:.1f} 分钟")
-                sleep(600)
-                countdown -= 600
-        if 3600 > countdown >= 600:
-            for _ in range(countdown // 60):
-                countdown = abs(self.api.GetSaleStartTime() - int(time()))
-                logger.info(f"【等待开票】即将开票! 需要等待 {countdown/60:.1f} 分钟")
-                sleep(60)
-                countdown -= 60
-        if 600 > countdown >= 60:
-            for _ in range(countdown // 5):
-                countdown = abs(self.api.GetSaleStartTime() - int(time()))
-                logger.info(f"【等待开票】准备开票! 需要等待 {countdown/60:.1f} 分钟")
-                sleep(5)
-                countdown -= 5
-        if countdown == 0:
-            logger.info("【等待开票】等待结束! 开始抢票")
 
     @logger.catch
     def RiskProcessAction(self) -> None:
@@ -279,19 +280,18 @@ class Task:
         """
         job = {
             "开始": "Next",
-            "获取Token": "QueryToken",
             "等待开票": "WaitAvailable",
+            "获取Token": "QueryToken",
             "验证码": "RiskProcess",
             "等待余票": "QueryTicket",
             "创建订单": "CreateOrder",
             "创建订单状态": "CreateStatus",
         }
+
         while self.state != "完成":  # type: ignore
             sleep(0.15)
-            if self.state in job:  # type: ignore
-                self.trigger(job[self.state])  # type: ignore
-            else:
-                logger.warning("状态机异常! 程序正在准备退出...")
-                sleep(5)
-                sys.exit()
+            self.trigger(job[self.state])  # type: ignore
+            if time() >= self.lastTime + 9 * 60:
+                logger.info("【刷新Token】已经9分钟没刷新Token了! 开始刷新")
+                self.to_获取Token()  # type: ignore
         return True
