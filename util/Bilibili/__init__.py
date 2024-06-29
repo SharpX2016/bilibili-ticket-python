@@ -152,9 +152,6 @@ class Bilibili:
             return dist
         else:
             logger.error("【获取开票时间】获取失败!")
-            logger.warning("程序正在准备退出...")
-            sleep(5)
-            sys.exit()
 
     @logger.catch
     def QueryAmount(self) -> bool:
